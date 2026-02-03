@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ColorSound Prototyp v4</title>
+<style>
+  body { font-family: sans-serif; text-align:center; }
+  canvas { border:1px solid #333; display:block; margin:10px auto; }
+  button { margin:5px; }
+</style>
+</head>
+<body>
+
+<h2>ColorSound Prototyp v4</h2>
+<button id="toggleLabels">Labels an/aus</button>
+<button id="toggleMode">Dark/Light Mode</button>
+
+<canvas id="colorCanvas" width="700" height="500"></canvas>
+
+<script>
+const canvas = document.getElementById('colorCanvas');
+const ctx = canvas.getContext('2d');
+
+const baseColors = [
+  {name:'C', rgb:[0,255,255], tone:0},    // Cyan
+  {name:'M', rgb:[255,0,255], tone:3},    // Magenta
+  {name:'Y', rgb:[255,255,0], tone:6}     // Yellow
+];
+
+let knownColors = [...baseColors];
+let placedColors = [];
+let showLabels = true;
+let darkMode = false;
+let dragging = null;
+let dragOffset = {x:0, y:0};
+let pulseList = []; // Pulsierende Punkte
+
+// Canvas Bereiche
+const topBox = {x:50, y:50, w:600, h:100};
+const bottomBox = {x:50, y:300, w:600, h:150};
+const pointRadius = 25;
+
+// ----------------- Zeichnen -----------------
+function draw() {
+  // Hintergrund
+  ctx.fillStyle = darkMode ? '#000' : '#fff';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // --- Oben: bekannte Farben ---
+  ctx.fillStyle = darkMode ? '#222' : '#ccc';
+  ctx.fillRect(topBox.x, topBox.y, topBox.w, topBox.h);
+  knownColors.forEach((c,i)=>{
+    let px = topBox.x + 40 + i*70;
+    let py = topBox.y + topBox.h/2;
+    c.screenX = px;
+    c.screenY = py;
+
+    let radius = pointRadius;
+    const pulse = pulseList.find(p=>p.color===c);
+    if(pulse){
+      radius += pulse.size;
+      pulse.size *= 0.9;
+      if(pulse.size<0.5) pulseList = pulseList.filter(p=>p!==pulse);
+    }
+
+    ctx.fillStyle = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
+    ctx.beginPath();
+    ctx.arc(px, py, radius, 0, Math.PI*2);
+    ctx.fill();
+
+    if(showLabels){
+      ctx.fillStyle = darkMode ? '#fff' : '#000';
+      ctx.fillText(c.name, px-7, py+5);
+    }
+  });
+
+  // --- Unten: abgelegte Punkte ---
+  ctx.fillStyle = darkMode ? '#222' : '#ddd';
+  ctx.fillRect(bottomBox.x, bottomBox.y, bottomBox.w, bottomBox.h);
+  placedColors.forEach((c)=>{
+    ctx.fillStyle = `rgb(${c.rgb[0]},${c.rgb[1]},${c.rgb[2]})`;
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, pointRadius, 0, Math.PI*2);
+    ctx.fill();
+
+    if(showLabels){
+      ctx.fillStyle = darkMode ? '#fff' : '#000';
+      ctx.fillText(c.name, c.x-7, c.y+5);
+    }
+  });
+
+  requestAnimationFrame(draw);
+}
+draw();
+
+// ----------------- Drag & Drop -----------------
+canvas.addEventListener('mousedown', (e)=>{
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  // Oben geklickt
+  for(const c of knownColors){
+    if(Math.hypot(x-c.screenX, y-c.screenY) < pointRadius){
+      const newPoint = {...c, x:bottomBox.x + 50 + placedColors.length*60, y: bottomBox.y + bottomBox.h/2, octave:0};
+      placedColors.push(newPoint);
+      dragging = newPoint;
+      dragOffset.x = newPoint.x - x;
+      dragOffset.y = newPoint.y - y;
+      computeMix();
+      return;
+    }
+  }
+
+  // Unten ein Punkt
+  for(const p of placedColors){
+    if(Math.hypot(x-p.x, y-p.y) < pointRadius){
+      dragging = p;
+      dragOffset.x = p.x - x;
+      dragOffset.y = p.y - y;
+      return;
+    }
+  }
+});
+
+canvas.addEventListener('mousemove', (e)=>{
+  if(!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  dragging.x = e.clientX - rect.left + dragOffset.x;
+  dragging.y = e.clientY - rect.top + dragOffset.y;
+});
+
+canvas.addEventListener('mouseup', ()=>{
+  dragging = null;
+  computeMix();
+});
+
+// ----------------- Mischlogik -----------------
+function computeMix() {
+  if(placedColors.length<2) return;
+
+  let sumR=0,sumG=0,sumB=0,sumTone=0;
+  placedColors.forEach(c=>{
+    sumR += c.rgb[0];
+    sumG += c.rgb[1];
+    sumB += c.rgb[2];
+    sumTone += c.tone + c.octave*12;
+  });
+  const n = placedColors.length;
+  const mixRGB = [Math.round(sumR/n),Math.round(sumG/n),Math.round(sumB/n)];
+  const mixTone = Math.round(sumTone/n);
+
+  const exists = knownColors.some(c=>c.rgb[0]===mixRGB[0] && c.rgb[1]===mixRGB[1] && c.rgb[2]===mixRGB[2]);
+  if(!exists){
+    const name = 'T'+mixTone;
+    const newColor = {name:name, rgb:mixRGB, tone:mixTone};
+    knownColors.push(newColor);
+    pulseList.push({color:newColor, size:15}); // Puls
+    playTone(mixTone);
+  }
+}
+
+// ----------------- Ton spielen -----------------
+function playTone(halfStep){
+  const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const oscillator = audioCtx.createOscillator();
+  const gainNode = audioCtx.createGain();
+  const freq = 261.63 * Math.pow(2, halfStep/12);
+  oscillator.frequency.value = freq;
+  oscillator.type = 'sine';
+  oscillator.connect(gainNode);
+  gainNode.connect(audioCtx.destination);
+  oscillator.start();
+  oscillator.stop(audioCtx.currentTime + 0.5);
+  gainNode.gain.value = 0.2;
+}
+
+// ----------------- Labels toggle -----------------
+document.getElementById('toggleLabels').addEventListener('click', ()=>{
+  showLabels = !showLabels;
+});
+
+// ----------------- Dark/Light Mode -----------------
+document.getElementById('toggleMode').addEventListener('click', ()=>{
+  darkMode = !darkMode;
+});
+
+// ----------------- Schwarz/Weiß Oktave -----------------
+document.addEventListener('keydown', (e)=>{
+  if(!placedColors.length) return;
+  const last = placedColors[placedColors.length-1];
+  if(e.key === 'w'){ last.octave +=1; playTone(last.tone + last.octave*12); }
+  if(e.key === 's'){ last.octave -=1; playTone(last.tone + last.octave*12); }
+});
+</script>
+</body>
+  </html>
